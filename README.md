@@ -20,7 +20,7 @@ UI basata su `MyStyle01`.
 
 ## Versione
 
-`0.8.6`
+`0.9.0`
 
 ## Avvio
 
@@ -81,11 +81,18 @@ Unblock-File .\build.ps1
 - Percorsi troppo lunghi o con caratteri speciali:
   - mantieni il progetto in un path breve, ad esempio `C:\SW\LAUNCHER-SW`
 
+## Aggiornamento App
+
+Durante l'aggiornamento dell'applicazione:
+1. **NON sovrascrivere** la cartella `CFG/` che contiene le tue configurazioni
+2. Sostituisci tutti gli altri file nella cartella principale
+3. Le tue impostazioni e setup salvati in `CFG/settings.json` verranno preservati
+
 ## Note operative
 
 - Funziona solo su Windows.
 - Il comando `reg import` puo richiedere privilegi adeguati in base alle chiavi presenti nel file `.sldreg`.
-- I setup sono salvati in `LAUNCHER-SW/settings.json`.
+- I setup sono salvati in `CFG/settings.json` (la cartella CFG non va mai eliminata durante aggiornamenti).
 - UI organizzata in 2 tab: `Avvio Rapido` e `Gestione Setup`.
 - Il log e visibile solo nella tab `Gestione Setup` (non in `Avvio Rapido`).
 - Le opzioni selezionate vengono importate filtrando il file `.sldreg` per categorie compatibili con il wizard SolidWorks.

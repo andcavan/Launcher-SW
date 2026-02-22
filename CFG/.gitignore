@@ -1,0 +1,5 @@
+# Ignora il file settings.json (contiene configurazioni utente)
+settings.json
+
+# Ma mantieni la cartella stessa nel repository
+!.gitkeep

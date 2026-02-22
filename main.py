@@ -23,9 +23,20 @@ except Exception as exc:
         f"Dettagli import: {exc}"
     )
 
-BASE_DIR = Path(__file__).resolve().parent
-APP_VERSION = (BASE_DIR / "VERSION").read_text(encoding="utf-8").strip()
-SETTINGS_FILE = BASE_DIR / "settings.json"
+# Distingui tra directory dati impacchettati (read-only) e directory app (modificabile)
+if getattr(sys, 'frozen', False):
+    # App impacchettata: dati in _MEIPASS, CFG accanto all'exe
+    DATA_DIR = Path(sys._MEIPASS)
+    APP_DIR = Path(sys.executable).parent
+else:
+    # Sviluppo: entrambi nella directory sorgente
+    DATA_DIR = Path(__file__).resolve().parent
+    APP_DIR = DATA_DIR
+
+BASE_DIR = DATA_DIR  # Per compatibilità con codice esistente
+CFG_DIR = APP_DIR / "CFG"
+APP_VERSION = (DATA_DIR / "VERSION").read_text(encoding="utf-8").strip()
+SETTINGS_FILE = CFG_DIR / "settings.json"
 
 try:
     from style import ui_style as mystyle
@@ -235,6 +246,7 @@ def _parse_setups(raw_list: object) -> list[SetupProfile]:
 
 
 def _load_settings() -> LauncherSettings:
+    CFG_DIR.mkdir(exist_ok=True)
     if not SETTINGS_FILE.is_file():
         return LauncherSettings()
     try:
@@ -844,14 +856,19 @@ class LauncherApp(ctk.CTk):
         self.launch_buttons_frame.grid(row=2, column=0, sticky="nsew", padx=12, pady=(0, 10))
 
     def _build_manage_tab(self, tab) -> None:
-        tab.grid_columnconfigure(1, weight=1)
-        tab.grid_rowconfigure(8, weight=1)
+        tab.grid_columnconfigure(0, weight=1)
+        tab.grid_rowconfigure(0, weight=1)
 
-        ctk.CTkLabel(tab, text="Setup salvato", text_color=self.palette.fg).grid(
+        # Frame scrollabile per contenere tutti i widget
+        scroll_frame = ctk.CTkScrollableFrame(tab, fg_color=self.palette.panel_2)
+        scroll_frame.grid(row=0, column=0, sticky="nsew", padx=0, pady=0)
+        scroll_frame.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(scroll_frame, text="Setup salvato", text_color=self.palette.fg).grid(
             row=0, column=0, sticky="w", padx=12, pady=(10, 6)
         )
         self.opt_setup = ctk.CTkOptionMenu(
-            tab,
+            scroll_frame,
             values=["Nessuno"],
             variable=self.var_setup_selected,
             command=self._on_setup_selected,
@@ -859,18 +876,18 @@ class LauncherApp(ctk.CTk):
             button_color=self.palette.accent,
         )
         self.opt_setup.grid(row=0, column=1, sticky="ew", padx=10, pady=(10, 6))
-        setup_buttons = ctk.CTkFrame(tab, fg_color="transparent")
+        setup_buttons = ctk.CTkFrame(scroll_frame, fg_color="transparent")
         setup_buttons.grid(row=0, column=2, sticky="e", padx=(0, 12), pady=(10, 6))
         ctk.CTkButton(setup_buttons, text="Nuovo", width=92, command=self._new_setup).pack(side="left", padx=(0, 6))
         ctk.CTkButton(setup_buttons, text="Elimina", width=92, command=self._delete_setup, fg_color=self.palette.err).pack(
             side="left"
         )
 
-        ctk.CTkLabel(tab, text="Nome setup", text_color=self.palette.fg).grid(
+        ctk.CTkLabel(scroll_frame, text="Nome setup", text_color=self.palette.fg).grid(
             row=1, column=0, sticky="w", padx=12, pady=6
         )
         self.ent_setup_name = ctk.CTkEntry(
-            tab,
+            scroll_frame,
             textvariable=self.var_setup_name,
             fg_color=self.palette.entry_bg,
             text_color=self.palette.entry_fg,
@@ -878,33 +895,33 @@ class LauncherApp(ctk.CTk):
         )
         self.ent_setup_name.grid(row=1, column=1, sticky="ew", padx=10, pady=6)
         ctk.CTkButton(
-            tab,
+            scroll_frame,
             text="Salva/Aggiorna",
             width=190,
             command=self._save_setup,
             fg_color=self.palette.accent_2,
         ).grid(row=1, column=2, sticky="e", padx=(0, 12), pady=6)
 
-        ctk.CTkLabel(tab, text="File configurazione (.sldreg)", text_color=self.palette.fg).grid(
+        ctk.CTkLabel(scroll_frame, text="File configurazione (.sldreg)", text_color=self.palette.fg).grid(
             row=2, column=0, sticky="w", padx=12, pady=(2, 6)
         )
         self.ent_sldreg = ctk.CTkEntry(
-            tab,
+            scroll_frame,
             textvariable=self.var_sldreg,
             fg_color=self.palette.entry_bg,
             text_color=self.palette.entry_fg,
             border_color=self.palette.border,
         )
         self.ent_sldreg.grid(row=2, column=1, sticky="ew", padx=10, pady=(2, 6))
-        ctk.CTkButton(tab, text="Sfoglia", width=100, command=self._pick_sldreg, fg_color=self.palette.accent).grid(
+        ctk.CTkButton(scroll_frame, text="Sfoglia", width=100, command=self._pick_sldreg, fg_color=self.palette.accent).grid(
             row=2, column=2, sticky="e", padx=(0, 12), pady=(2, 6)
         )
 
-        ctk.CTkLabel(tab, text="Versione SolidWorks", text_color=self.palette.fg).grid(
+        ctk.CTkLabel(scroll_frame, text="Versione SolidWorks", text_color=self.palette.fg).grid(
             row=3, column=0, sticky="w", padx=12, pady=6
         )
         self.ent_sw_version = ctk.CTkEntry(
-            tab,
+            scroll_frame,
             textvariable=self.var_sw_version,
             fg_color=self.palette.entry_bg,
             text_color=self.palette.entry_fg,
@@ -912,15 +929,15 @@ class LauncherApp(ctk.CTk):
             placeholder_text="es. 2024 SP2",
         )
         self.ent_sw_version.grid(row=3, column=1, sticky="ew", padx=10, pady=6)
-        ctk.CTkButton(tab, text="Auto", width=100, command=self._autofill_sw_version, fg_color=self.palette.accent).grid(
+        ctk.CTkButton(scroll_frame, text="Auto", width=100, command=self._autofill_sw_version, fg_color=self.palette.accent).grid(
             row=3, column=2, sticky="e", padx=(0, 12), pady=6
         )
 
-        ctk.CTkLabel(tab, text="Eseguibile SolidWorks (SLDWORKS.exe)", text_color=self.palette.fg).grid(
+        ctk.CTkLabel(scroll_frame, text="Eseguibile SolidWorks (SLDWORKS.exe)", text_color=self.palette.fg).grid(
             row=4, column=0, sticky="w", padx=12, pady=6
         )
         self.ent_solidworks = ctk.CTkEntry(
-            tab,
+            scroll_frame,
             textvariable=self.var_solidworks,
             fg_color=self.palette.entry_bg,
             text_color=self.palette.entry_fg,
@@ -928,7 +945,7 @@ class LauncherApp(ctk.CTk):
         )
         self.ent_solidworks.grid(row=4, column=1, sticky="ew", padx=10, pady=6)
 
-        btn_sw = ctk.CTkFrame(tab, fg_color="transparent")
+        btn_sw = ctk.CTkFrame(scroll_frame, fg_color="transparent")
         btn_sw.grid(row=4, column=2, sticky="e", padx=(0, 12), pady=6)
         ctk.CTkButton(btn_sw, text="Sfoglia", width=92, command=self._pick_solidworks, fg_color=self.palette.accent).pack(
             side="left", padx=(0, 6)
@@ -937,10 +954,10 @@ class LauncherApp(ctk.CTk):
             side="left"
         )
 
-        ctk.CTkLabel(tab, text="Cosa configurare (.sldreg)", text_color=self.palette.fg).grid(
+        ctk.CTkLabel(scroll_frame, text="Cosa configurare (.sldreg)", text_color=self.palette.fg).grid(
             row=5, column=0, sticky="w", padx=12, pady=6
         )
-        options_box = ctk.CTkFrame(tab, fg_color="transparent")
+        options_box = ctk.CTkFrame(scroll_frame, fg_color="transparent")
         options_box.grid(row=5, column=1, columnspan=2, sticky="ew", padx=(10, 12), pady=6)
         options_box.grid_columnconfigure(0, weight=1)
 
@@ -995,13 +1012,13 @@ class LauncherApp(ctk.CTk):
         ).grid(row=6, column=0, sticky="w", pady=(0, 2))
 
         ctk.CTkCheckBox(
-            tab,
+            scroll_frame,
             text="Pulisci chiavi selezionate prima dell'import",
             variable=self.var_cleanup_before_import,
         ).grid(row=6, column=0, columnspan=3, sticky="w", padx=12, pady=(2, 8))
 
         ctk.CTkButton(
-            tab,
+            scroll_frame,
             text="Carica Configurazione + Avvia SolidWorks",
             command=self._run_launcher,
             fg_color=self.palette.accent_2,
@@ -1011,13 +1028,14 @@ class LauncherApp(ctk.CTk):
         self._sync_toolbar_mode_state()
 
         self.manage_log_box = ctk.CTkTextbox(
-            tab,
+            scroll_frame,
             fg_color=self.palette.panel_2,
             text_color=self.palette.entry_fg,
             border_color=self.palette.border,
             border_width=1,
+            height=150,
         )
-        self.manage_log_box.grid(row=8, column=0, columnspan=3, sticky="nsew", padx=12, pady=(0, 10))
+        self.manage_log_box.grid(row=8, column=0, columnspan=3, sticky="ew", padx=12, pady=(0, 10))
         self.manage_log_box.configure(state="disabled")
 
     def _collect_restore_options(self) -> RestoreOptions:
