@@ -721,8 +721,8 @@ class LauncherApp(ctk.CTk):
         self.palette = mystyle.apply_style(dark=self.is_dark_mode)
 
         self.title(f"Launcher SolidWorks v{APP_VERSION}")
-        self.geometry("860x560")
-        self.minsize(780, 520)
+        self.geometry("520x520")
+        self.minsize(520, 520)
         self.configure(fg_color=self.palette.bg)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
@@ -1186,7 +1186,7 @@ class LauncherApp(ctk.CTk):
             ).grid(row=0, column=0, sticky="w", padx=8, pady=8)
             return
 
-        columns = 3
+        columns = 2
         for col in range(columns):
             self.launch_buttons_frame.grid_columnconfigure(col, weight=1)
 
@@ -1216,11 +1216,12 @@ class LauncherApp(ctk.CTk):
                 self.launch_buttons_frame,
                 text=btn_text,
                 height=60,
+                width=220,
                 fg_color=fg_color,
                 command=(lambda name=setup.name: self._launch_saved_setup(name)) if not self._reorder_mode else None,
                 font=ctk.CTkFont(size=13, weight="bold"),
             )
-            button.grid(row=row, column=col, sticky="ew", padx=4, pady=4)
+            button.grid(row=row, column=col, sticky="", padx=4, pady=4)
             self._setup_button_refs.append((setup.name, button))
             if self._reorder_mode:
                 button.bind("<ButtonPress-1>", lambda _e, name=setup.name: self._drag_start(name))
