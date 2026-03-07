@@ -20,7 +20,7 @@ UI basata su `MyStyle01`.
 
 ## Versione
 
-`0.9.6`
+`0.9.13`
 
 ## Avvio
 

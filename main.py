@@ -2,15 +2,18 @@
 
 import json
 import os
+import tempfile
 import shutil
 import subprocess
 import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QApplication,
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QFileDialog,
@@ -22,6 +25,7 @@ from PyQt6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QRadioButton,
     QScrollArea,
     QTabWidget,
     QTextEdit,
@@ -40,10 +44,20 @@ else:
 BASE_DIR = DATA_DIR
 CFG_DIR = APP_DIR / "CFG"
 SETTINGS_FILE = CFG_DIR / "settings.json"
+_SETUP_BOOL_FIELDS = (
+    "cleanup_before_import",
+    "restore_system_options",
+    "restore_toolbar_layout",
+    "restore_keyboard_shortcuts",
+    "restore_mouse_gestures",
+    "restore_menu_customizations",
+    "restore_saved_views",
+)
+
 try:
-    APP_VERSION = (DATA_DIR / "VERSION").read_text(encoding="utf-8").strip() or "0.9.7"
+    APP_VERSION = (DATA_DIR / "VERSION").read_text(encoding="utf-8").strip() or "0.9.13"
 except Exception:
-    APP_VERSION = "0.9.7"
+    APP_VERSION = "0.9.13"
 
 
 DARK_THEME = """
@@ -118,7 +132,15 @@ class SetupProfile:
     sldreg_path: str = ""
     sw_version: str = ""
     solidworks_path: str = ""
+    selected_sections: list[str] = field(default_factory=list)
     cleanup_before_import: bool = True
+    restore_system_options: bool = True
+    restore_toolbar_layout: bool = True
+    restore_toolbar_mode: str = "all"
+    restore_keyboard_shortcuts: bool = True
+    restore_mouse_gestures: bool = True
+    restore_menu_customizations: bool = True
+    restore_saved_views: bool = True
 
 
 @dataclass
@@ -128,6 +150,448 @@ class LauncherSettings:
     solidworks_path: str = ""
     active_setup: str = ""
     setups: list[SetupProfile] = field(default_factory=list)
+
+
+@dataclass
+class RestoreOptions:
+    system_options: bool = True
+    toolbar_layout: bool = True
+    toolbar_mode: str = "all"
+    keyboard_shortcuts: bool = True
+    mouse_gestures: bool = True
+    menu_customizations: bool = True
+    saved_views: bool = True
+
+    def has_any_selection(self) -> bool:
+        return any(
+            (
+                self.system_options,
+                self.toolbar_layout,
+                self.keyboard_shortcuts,
+                self.mouse_gestures,
+                self.menu_customizations,
+                self.saved_views,
+            )
+        )
+
+
+def _setup_row_needs_migration(row: dict[str, object]) -> bool:
+    for field_name in _SETUP_BOOL_FIELDS:
+        if field_name not in row:
+            return True
+    toolbar_mode = _normalize_toolbar_mode(row.get("restore_toolbar_mode", "all"))
+    if toolbar_mode not in {"all", "macro_only"}:
+        return True
+    return False
+
+
+def _clean_section_list(raw_sections: object) -> list[str]:
+    if not isinstance(raw_sections, list):
+        return []
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for item in raw_sections:
+        value = str(item or "").strip()
+        if not value:
+            continue
+        low = value.casefold()
+        if low in seen:
+            continue
+        seen.add(low)
+        cleaned.append(value)
+    return cleaned
+
+
+def _normalize_toolbar_mode(value: object) -> str:
+    mode = str(value or "").strip().casefold()
+    if mode in ("macro", "macro_only", "macro-only", "macros", "solo_macro"):
+        return "macro_only"
+    return "all"
+
+
+def _infer_restore_options_from_legacy_sections(legacy_sections: list[str]) -> RestoreOptions:
+    if not legacy_sections:
+        return RestoreOptions()
+
+    sections_low = [section.casefold() for section in legacy_sections]
+
+    def _contains(token: str) -> bool:
+        return any(token in section for section in sections_low)
+
+    has_menu = _contains("menu customizations")
+    has_saved_views = _contains("saved views")
+    has_mouse = _contains("mouse gestures")
+    has_shortcuts = _contains("custom accelerators")
+    has_toolbar_all = any(
+        token in section
+        for section in sections_low
+        for token in ("toolbars", "commandmanager", "api toolbars", "viewtools")
+    )
+    has_toolbar_macro = _contains("user defined macros")
+    has_toolbar = has_toolbar_all or has_toolbar_macro
+
+    known_tokens = (
+        "menu customizations",
+        "saved views",
+        "mouse gestures",
+        "custom accelerators",
+        "toolbars",
+        "commandmanager",
+        "api toolbars",
+        "user defined macros",
+        "viewtools",
+    )
+    has_system_options = any(not any(token in section for token in known_tokens) for section in sections_low)
+
+    options = RestoreOptions(
+        system_options=has_system_options,
+        toolbar_layout=has_toolbar,
+        toolbar_mode="macro_only" if has_toolbar_macro and not has_toolbar_all else "all",
+        keyboard_shortcuts=has_shortcuts,
+        mouse_gestures=has_mouse,
+        menu_customizations=has_menu,
+        saved_views=has_saved_views,
+    )
+    if options.has_any_selection():
+        return options
+    return RestoreOptions()
+
+
+def _normalize_restore_options(options: RestoreOptions | None) -> RestoreOptions:
+    if options is None:
+        return RestoreOptions()
+    return RestoreOptions(
+        system_options=bool(options.system_options),
+        toolbar_layout=bool(options.toolbar_layout),
+        toolbar_mode=_normalize_toolbar_mode(options.toolbar_mode),
+        keyboard_shortcuts=bool(options.keyboard_shortcuts),
+        mouse_gestures=bool(options.mouse_gestures),
+        menu_customizations=bool(options.menu_customizations),
+        saved_views=bool(options.saved_views),
+    )
+
+
+def _read_reg_text(file_path: Path) -> tuple[str, str]:
+    payload = file_path.read_bytes()
+    if payload.startswith(b"\xff\xfe") or payload.startswith(b"\xfe\xff"):
+        return payload.decode("utf-16"), "utf-16"
+    if payload.startswith(b"\xef\xbb\xbf"):
+        return payload.decode("utf-8-sig"), "utf-8-sig"
+
+    for encoding in ("utf-8", "cp1252", "latin-1"):
+        try:
+            return payload.decode(encoding), encoding
+        except Exception:
+            continue
+    return payload.decode("latin-1", errors="replace"), "latin-1"
+
+
+def _section_from_registry_key(registry_key: str) -> str:
+    parts = [part for part in registry_key.split("\\") if part]
+    for idx, part in enumerate(parts):
+        if part.upper().startswith("SOLIDWORKS "):
+            if idx + 1 < len(parts):
+                return parts[idx + 1]
+            return "ROOT"
+    return parts[-1] if parts else "ROOT"
+
+
+def _parse_sldreg_blocks(file_path: Path) -> tuple[list[str], list[tuple[str, str, list[str]]], str]:
+    text, encoding = _read_reg_text(file_path)
+    raw_lines = text.splitlines()
+    header_lines: list[str] = []
+    blocks: list[tuple[str, str, list[str]]] = []
+    current_lines: list[str] = []
+    current_section = ""
+    current_key = ""
+    in_block = False
+
+    for line in raw_lines:
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            if in_block and current_lines:
+                blocks.append((current_section, current_key, current_lines))
+            key_name = stripped[1:-1].strip()
+            current_section = _section_from_registry_key(key_name)
+            current_key = key_name
+            current_lines = [line]
+            in_block = True
+            continue
+
+        if in_block:
+            current_lines.append(line)
+        else:
+            header_lines.append(line)
+
+    if in_block and current_lines:
+        blocks.append((current_section, current_key, current_lines))
+
+    if not header_lines:
+        header_lines = ["Windows Registry Editor Version 5.00", ""]
+
+    return header_lines, blocks, encoding
+
+
+def _is_registry_parent(parent_key: str, child_key: str) -> bool:
+    p = parent_key.rstrip("\\").casefold()
+    c = child_key.rstrip("\\").casefold()
+    return c == p or c.startswith(f"{p}\\")
+
+
+def _minimize_cleanup_keys(raw_keys: list[str]) -> list[str]:
+    unique_keys: list[str] = []
+    seen: set[str] = set()
+    for key in raw_keys:
+        normalized = key.strip()
+        if not normalized:
+            continue
+        low = normalized.casefold()
+        if low in seen:
+            continue
+        seen.add(low)
+        unique_keys.append(normalized)
+
+    minimized: list[str] = []
+    for key in sorted(unique_keys, key=lambda item: (item.count("\\"), len(item), item.casefold())):
+        if any(_is_registry_parent(existing, key) for existing in minimized):
+            continue
+        minimized.append(key)
+    return minimized
+
+
+def _is_recent_registry_key(key_name: str) -> bool:
+    low = key_name.casefold()
+    tokens = (
+        "recent",
+        "pinned file list",
+    )
+    return any(token in low for token in tokens)
+
+
+def _registry_key_category(key_name: str) -> str:
+    low = key_name.casefold()
+    if _is_recent_registry_key(key_name):
+        return "recent"
+    if "\\menu customizations" in low:
+        return "menu_customizations"
+    if "\\user interface\\saved views" in low:
+        return "saved_views"
+    if "\\user interface\\settings\\mouse gestures" in low:
+        return "mouse_gestures"
+    if "\\custom accelerators" in low:
+        return "keyboard_shortcuts"
+    if "\\user defined macros" in low:
+        return "toolbar_macro"
+    if "\\user interface\\commandmanager" in low:
+        return "toolbar_layout"
+    if "\\user interface\\api toolbars" in low:
+        return "toolbar_layout"
+    if "\\user interface\\toolbars" in low:
+        return "toolbar_layout"
+    if "\\user interface\\viewtools" in low:
+        return "toolbar_layout"
+    if "\\simplified interface\\user interface\\viewtools" in low:
+        return "toolbar_layout"
+    if "\\toolbars" in low:
+        return "toolbar_layout"
+    return "system_options"
+
+
+def _should_restore_category(category: str, options: RestoreOptions) -> bool:
+    if category == "recent":
+        return False
+    if category == "system_options":
+        return options.system_options
+    if category == "toolbar_macro":
+        return options.toolbar_layout
+    if category == "toolbar_layout":
+        return options.toolbar_layout and options.toolbar_mode == "all"
+    if category == "keyboard_shortcuts":
+        return options.keyboard_shortcuts
+    if category == "mouse_gestures":
+        return options.mouse_gestures
+    if category == "menu_customizations":
+        return options.menu_customizations
+    if category == "saved_views":
+        return options.saved_views
+    return False
+
+
+def _collect_unsafe_cleanup_parents(excluded_keys: list[str]) -> set[str]:
+    unsafe: set[str] = set()
+    for key_name in excluded_keys:
+        normalized = key_name.strip().rstrip("\\")
+        if not normalized:
+            continue
+        parts = [part for part in normalized.split("\\") if part]
+        if not parts:
+            continue
+        cursor = parts[0]
+        unsafe.add(cursor.casefold())
+        for part in parts[1:]:
+            cursor = f"{cursor}\\{part}"
+            unsafe.add(cursor.casefold())
+    return unsafe
+
+
+def _describe_restore_options(options: RestoreOptions) -> str:
+    labels: list[str] = []
+    if options.system_options:
+        labels.append("opzioni sistema")
+    if options.toolbar_layout:
+        if options.toolbar_mode == "macro_only":
+            labels.append("toolbar macro")
+        else:
+            labels.append("layout toolbar")
+    if options.keyboard_shortcuts:
+        labels.append("tasti rapidi")
+    if options.mouse_gestures:
+        labels.append("gesti mouse")
+    if options.menu_customizations:
+        labels.append("menu")
+    if options.saved_views:
+        labels.append("viste salvate")
+    if not labels:
+        return "nessuna opzione"
+    return ", ".join(labels)
+
+
+def _write_filtered_sldreg(
+    source_file: Path,
+    target_file: Path,
+    restore_options: RestoreOptions,
+    cleanup_before_import: bool,
+) -> tuple[bool, str]:
+    header_lines, blocks, encoding = _parse_sldreg_blocks(source_file)
+    options = _normalize_restore_options(restore_options)
+    if not options.has_any_selection():
+        return False, "Seleziona almeno una voce da configurare."
+
+    out_lines = list(header_lines)
+    if out_lines and out_lines[-1] != "":
+        out_lines.append("")
+
+    selected_blocks: list[tuple[str, str, list[str], str]] = []
+    excluded_keys: list[str] = []
+    selected_keys: list[str] = []
+    for section, key_name, lines in blocks:
+        category = _registry_key_category(key_name)
+        if _should_restore_category(category, options):
+            selected_blocks.append((section, key_name, lines, category))
+            selected_keys.append(key_name)
+        else:
+            excluded_keys.append(key_name)
+
+    if not selected_blocks:
+        return False, "Nessuna chiave del file .sldreg corrisponde alle opzioni selezionate."
+
+    if cleanup_before_import:
+        unsafe_parents = _collect_unsafe_cleanup_parents(excluded_keys)
+        cleanup_candidates: list[str] = []
+        seen_candidates: set[str] = set()
+        for key_name in selected_keys:
+            normalized = key_name.strip().rstrip("\\")
+            if not normalized:
+                continue
+            low = normalized.casefold()
+            if low in seen_candidates:
+                continue
+            seen_candidates.add(low)
+            if low in unsafe_parents:
+                continue
+            cleanup_candidates.append(normalized)
+
+        cleanup_keys = _minimize_cleanup_keys(cleanup_candidates)
+        for key_name in cleanup_keys:
+            out_lines.append(f"[-{key_name}]")
+        if cleanup_keys:
+            out_lines.append("")
+
+    written_blocks = 0
+    for _section, _key_name, lines, _category in selected_blocks:
+        out_lines.extend(lines)
+        if lines and lines[-1] != "":
+            out_lines.append("")
+        written_blocks += 1
+
+    if written_blocks == 0:
+        return False, "Nessuna chiave valida da importare nel file .sldreg."
+
+    text = "\r\n".join(out_lines).rstrip() + "\r\n"
+    target_file.write_text(text, encoding=encoding)
+    return True, ""
+
+
+def _import_sldreg(
+    file_path: Path,
+    restore_options: RestoreOptions | None = None,
+    cleanup_before_import: bool = True,
+) -> tuple[bool, str]:
+    options = _normalize_restore_options(restore_options)
+    if not options.has_any_selection():
+        return False, "Seleziona almeno una voce da configurare."
+
+    source_for_import = file_path
+    temp_path: Path | None = None
+
+    try:
+        fd, temp_name = tempfile.mkstemp(prefix="swcfg_", suffix=".reg")
+        os.close(fd)
+        temp_path = Path(temp_name)
+        ok_filter, filter_msg = _write_filtered_sldreg(
+            file_path,
+            temp_path,
+            options,
+            cleanup_before_import=cleanup_before_import,
+        )
+        if not ok_filter:
+            return False, filter_msg
+        source_for_import = temp_path
+
+        completed = subprocess.run(
+            ["reg", "import", str(source_for_import)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if completed.returncode == 0:
+            mode = "pulizia + import" if cleanup_before_import else "import senza pulizia"
+            scope = _describe_restore_options(options)
+            return True, f"Configurazione caricata nel registro ({scope}, {mode})."
+        error_text = (completed.stderr or completed.stdout or "").strip()
+        if not error_text:
+            error_text = "Comando reg import terminato con errore."
+        return False, error_text
+    finally:
+        if temp_path is not None:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+
+def _is_solidworks_running() -> bool:
+    completed = subprocess.run(
+        ["tasklist", "/FI", "IMAGENAME eq SLDWORKS.exe"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    output = f"{completed.stdout}\n{completed.stderr}".lower()
+    return "sldworks.exe" in output
+
+
+def _kill_solidworks_processes() -> tuple[bool, str]:
+    completed = subprocess.run(
+        ["taskkill", "/IM", "SLDWORKS.exe", "/F", "/T"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode == 0:
+        return True, ""
+    msg = (completed.stderr or completed.stdout or "Impossibile chiudere le sessioni SolidWorks.").strip()
+    return False, msg
 
 
 def _parse_setups(raw_list: object) -> list[SetupProfile]:
@@ -145,13 +609,47 @@ def _parse_setups(raw_list: object) -> list[SetupProfile]:
         if key in seen:
             continue
         seen.add(key)
+        legacy_sections = _clean_section_list(row.get("selected_sections", []))
+        explicit_restore_options = any(
+            field_name in row
+            for field_name in (
+                "restore_system_options",
+                "restore_toolbar_layout",
+                "restore_toolbar_mode",
+                "restore_keyboard_shortcuts",
+                "restore_mouse_gestures",
+                "restore_menu_customizations",
+                "restore_saved_views",
+            )
+        )
+        if explicit_restore_options:
+            restore_options = RestoreOptions(
+                system_options=bool(row.get("restore_system_options", True)),
+                toolbar_layout=bool(row.get("restore_toolbar_layout", True)),
+                toolbar_mode=_normalize_toolbar_mode(row.get("restore_toolbar_mode", "all")),
+                keyboard_shortcuts=bool(row.get("restore_keyboard_shortcuts", True)),
+                mouse_gestures=bool(row.get("restore_mouse_gestures", True)),
+                menu_customizations=bool(row.get("restore_menu_customizations", True)),
+                saved_views=bool(row.get("restore_saved_views", True)),
+            )
+        else:
+            restore_options = _infer_restore_options_from_legacy_sections(legacy_sections)
+
         parsed.append(
             SetupProfile(
                 name=name,
                 sldreg_path=str(row.get("sldreg_path", "")).strip(),
                 sw_version=str(row.get("sw_version", "")).strip(),
                 solidworks_path=str(row.get("solidworks_path", "")).strip(),
+                selected_sections=legacy_sections,
                 cleanup_before_import=bool(row.get("cleanup_before_import", True)),
+                restore_system_options=restore_options.system_options,
+                restore_toolbar_layout=restore_options.toolbar_layout,
+                restore_toolbar_mode=restore_options.toolbar_mode,
+                restore_keyboard_shortcuts=restore_options.keyboard_shortcuts,
+                restore_mouse_gestures=restore_options.mouse_gestures,
+                restore_menu_customizations=restore_options.menu_customizations,
+                restore_saved_views=restore_options.saved_views,
             )
         )
     return parsed
@@ -163,13 +661,25 @@ def _load_settings() -> LauncherSettings:
         return LauncherSettings()
     try:
         raw = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
-        return LauncherSettings(
+        raw_setups = raw.get("setups", [])
+        settings = LauncherSettings(
             sldreg_path=str(raw.get("sldreg_path", "")).strip(),
             sw_version=str(raw.get("sw_version", "")).strip(),
             solidworks_path=str(raw.get("solidworks_path", "")).strip(),
             active_setup=str(raw.get("active_setup", "")).strip(),
-            setups=_parse_setups(raw.get("setups", [])),
+            setups=_parse_setups(raw_setups),
         )
+
+        needs_migration = False
+        if isinstance(raw_setups, list):
+            for row in raw_setups:
+                if isinstance(row, dict) and _setup_row_needs_migration(row):
+                    needs_migration = True
+                    break
+        if needs_migration:
+            _save_settings(settings)
+
+        return settings
     except Exception:
         return LauncherSettings()
 
@@ -210,6 +720,7 @@ class LauncherApp(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.settings = _load_settings()
+        self._timed_info_box: QMessageBox | None = None
         self.setWindowTitle(f"Launcher SolidWorks v{APP_VERSION}")
         self.setMinimumSize(400, 500)
         self.resize(400, 540)
@@ -271,6 +782,29 @@ class LauncherApp(QMainWindow):
         self.edt_sldreg = QLineEdit()
         self.edt_sw_version = QLineEdit()
         self.edt_sw_exe = QLineEdit()
+
+        self.chk_restore_system_options = QCheckBox("Opzioni sistema")
+        self.chk_restore_toolbar_layout = QCheckBox("Layout toolbar")
+        self.rb_toolbar_all = QRadioButton("Tutte")
+        self.rb_toolbar_macros = QRadioButton("Solo macro")
+        self.toolbar_mode_group = QButtonGroup(self)
+        self.toolbar_mode_group.setExclusive(True)
+        self.toolbar_mode_group.addButton(self.rb_toolbar_all)
+        self.toolbar_mode_group.addButton(self.rb_toolbar_macros)
+        self.chk_restore_keyboard_shortcuts = QCheckBox("Tasti rapidi")
+        self.chk_restore_mouse_gestures = QCheckBox("Gesti mouse")
+        self.chk_restore_menu_customizations = QCheckBox("Personalizzazioni menu")
+        self.chk_restore_saved_views = QCheckBox("Viste salvate")
+
+        self.chk_restore_system_options.setChecked(True)
+        self.chk_restore_toolbar_layout.setChecked(True)
+        self.rb_toolbar_all.setChecked(True)
+        self.chk_restore_keyboard_shortcuts.setChecked(True)
+        self.chk_restore_mouse_gestures.setChecked(True)
+        self.chk_restore_menu_customizations.setChecked(True)
+        self.chk_restore_saved_views.setChecked(True)
+        self.chk_restore_toolbar_layout.toggled.connect(self._on_toolbar_layout_toggled)
+
         self.chk_cleanup = QCheckBox("Pulisci chiavi selezionate prima dell'import")
         self.chk_cleanup.setChecked(True)
 
@@ -308,11 +842,23 @@ class LauncherApp(QMainWindow):
         grid.addWidget(btn_sw_pick, 4, 4)
         grid.addWidget(btn_sw_detect, 4, 5)
 
-        grid.addWidget(self.chk_cleanup, 5, 0, 1, 6)
+        grid.addWidget(QLabel("Cosa configurare (wizard SW)"), 5, 0, 1, 6)
+        grid.addWidget(self.chk_restore_system_options, 6, 0, 1, 3)
+        grid.addWidget(self.chk_restore_keyboard_shortcuts, 6, 3, 1, 3)
+
+        grid.addWidget(self.chk_restore_toolbar_layout, 7, 0, 1, 2)
+        grid.addWidget(self.rb_toolbar_all, 7, 2)
+        grid.addWidget(self.rb_toolbar_macros, 7, 3)
+        grid.addWidget(self.chk_restore_mouse_gestures, 7, 4, 1, 2)
+
+        grid.addWidget(self.chk_restore_menu_customizations, 8, 0, 1, 3)
+        grid.addWidget(self.chk_restore_saved_views, 8, 3, 1, 3)
+
+        grid.addWidget(self.chk_cleanup, 9, 0, 1, 6)
 
         btn_run = QPushButton("Carica Configurazione + Avvia SolidWorks")
         btn_run.clicked.connect(self._run_launcher)
-        grid.addWidget(btn_run, 6, 0, 1, 6)
+        grid.addWidget(btn_run, 10, 0, 1, 6)
 
         layout.addWidget(box)
 
@@ -376,6 +922,21 @@ class LauncherApp(QMainWindow):
         self.edt_sw_version.setText(setup.sw_version)
         self.edt_sw_exe.setText(setup.solidworks_path)
         self.chk_cleanup.setChecked(bool(setup.cleanup_before_import))
+        self.chk_restore_system_options.setChecked(bool(setup.restore_system_options))
+        self.chk_restore_toolbar_layout.setChecked(bool(setup.restore_toolbar_layout))
+        self.chk_restore_keyboard_shortcuts.setChecked(bool(setup.restore_keyboard_shortcuts))
+        self.chk_restore_mouse_gestures.setChecked(bool(setup.restore_mouse_gestures))
+        self.chk_restore_menu_customizations.setChecked(bool(setup.restore_menu_customizations))
+        self.chk_restore_saved_views.setChecked(bool(setup.restore_saved_views))
+        if _normalize_toolbar_mode(setup.restore_toolbar_mode) == "macro_only":
+            self.rb_toolbar_macros.setChecked(True)
+        else:
+            self.rb_toolbar_all.setChecked(True)
+        self._on_toolbar_layout_toggled(self.chk_restore_toolbar_layout.isChecked())
+
+    def _on_toolbar_layout_toggled(self, enabled: bool) -> None:
+        self.rb_toolbar_all.setEnabled(enabled)
+        self.rb_toolbar_macros.setEnabled(enabled)
 
     def _on_setup_selected(self, selected_name: str) -> None:
         if selected_name == "Nessuno":
@@ -391,6 +952,14 @@ class LauncherApp(QMainWindow):
     def _new_setup(self) -> None:
         self.cmb_setup.setCurrentText("Nessuno")
         self.edt_name.clear()
+        self.chk_restore_system_options.setChecked(True)
+        self.chk_restore_toolbar_layout.setChecked(True)
+        self.rb_toolbar_all.setChecked(True)
+        self.chk_restore_keyboard_shortcuts.setChecked(True)
+        self.chk_restore_mouse_gestures.setChecked(True)
+        self.chk_restore_menu_customizations.setChecked(True)
+        self.chk_restore_saved_views.setChecked(True)
+        self.chk_cleanup.setChecked(True)
 
     def _save_setup(self) -> None:
         name = self.edt_name.text().strip()
@@ -407,6 +976,13 @@ class LauncherApp(QMainWindow):
         current.sw_version = self.edt_sw_version.text().strip()
         current.solidworks_path = self.edt_sw_exe.text().strip()
         current.cleanup_before_import = bool(self.chk_cleanup.isChecked())
+        current.restore_system_options = bool(self.chk_restore_system_options.isChecked())
+        current.restore_toolbar_layout = bool(self.chk_restore_toolbar_layout.isChecked())
+        current.restore_toolbar_mode = "macro_only" if self.rb_toolbar_macros.isChecked() else "all"
+        current.restore_keyboard_shortcuts = bool(self.chk_restore_keyboard_shortcuts.isChecked())
+        current.restore_mouse_gestures = bool(self.chk_restore_mouse_gestures.isChecked())
+        current.restore_menu_customizations = bool(self.chk_restore_menu_customizations.isChecked())
+        current.restore_saved_views = bool(self.chk_restore_saved_views.isChecked())
 
         self.settings.active_setup = name
         self._persist_settings()
@@ -468,6 +1044,52 @@ class LauncherApp(QMainWindow):
             return None
         return sldreg, sw_exe
 
+    def _collect_restore_options(self) -> RestoreOptions:
+        options = RestoreOptions(
+            system_options=bool(self.chk_restore_system_options.isChecked()),
+            toolbar_layout=bool(self.chk_restore_toolbar_layout.isChecked()),
+            toolbar_mode="macro_only" if self.rb_toolbar_macros.isChecked() else "all",
+            keyboard_shortcuts=bool(self.chk_restore_keyboard_shortcuts.isChecked()),
+            mouse_gestures=bool(self.chk_restore_mouse_gestures.isChecked()),
+            menu_customizations=bool(self.chk_restore_menu_customizations.isChecked()),
+            saved_views=bool(self.chk_restore_saved_views.isChecked()),
+        )
+        return _normalize_restore_options(options)
+
+    def _show_timed_info(self, title: str, message: str, timeout_ms: int = 5000) -> None:
+        if self._timed_info_box is not None:
+            self._timed_info_box.close()
+            self._timed_info_box.deleteLater()
+            self._timed_info_box = None
+
+        box = QMessageBox(self)
+        box.setWindowTitle(title)
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setText(message)
+        box.setStandardButtons(QMessageBox.StandardButton.Ok)
+        ok_button = box.button(QMessageBox.StandardButton.Ok)
+        if ok_button is not None:
+            ok_button.hide()
+        box.setModal(False)
+        box.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+
+        timer = QTimer(box)
+        timer.setSingleShot(True)
+
+        def _close_box() -> None:
+            box.accept()
+
+        def _cleanup_ref() -> None:
+            if self._timed_info_box is box:
+                self._timed_info_box = None
+
+        timer.timeout.connect(_close_box)
+        box.finished.connect(_cleanup_ref)
+
+        self._timed_info_box = box
+        box.show()
+        timer.start(timeout_ms)
+
     def _run_launcher(self) -> None:
         if os.name != "nt":
             QMessageBox.critical(self, "Launcher", "Questa app funziona solo su Windows.")
@@ -482,11 +1104,37 @@ class LauncherApp(QMainWindow):
             QMessageBox.warning(self, "Launcher", "Inserisci la versione SolidWorks.")
             return
 
-        # Import base della configurazione
-        completed = subprocess.run(["reg", "import", str(sldreg)], capture_output=True, text=True, check=False)
-        if completed.returncode != 0:
-            msg = (completed.stderr or completed.stdout or "Import .sldreg fallito.").strip()
-            QMessageBox.critical(self, "Import .sldreg", msg)
+        if _is_solidworks_running():
+            answer = QMessageBox.question(
+                self,
+                "SolidWorks in esecuzione",
+                "Sono presenti sessioni SolidWorks aperte.\n"
+                "Vuoi chiuderle e continuare con import + nuovo avvio?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                self._log("Avvio annullato: sessioni SolidWorks gia aperte.")
+                return
+
+            closed, close_msg = _kill_solidworks_processes()
+            if not closed:
+                QMessageBox.critical(self, "SolidWorks", close_msg)
+                return
+            self._log("Sessioni SolidWorks chiuse prima dell'import.")
+
+        options = self._collect_restore_options()
+        if not options.has_any_selection():
+            QMessageBox.warning(self, "Launcher", "Seleziona almeno una sezione da configurare.")
+            return
+
+        ok_import, import_msg = _import_sldreg(
+            sldreg,
+            restore_options=options,
+            cleanup_before_import=bool(self.chk_cleanup.isChecked()),
+        )
+        if not ok_import:
+            QMessageBox.critical(self, "Import .sldreg", import_msg)
             return
 
         try:
@@ -496,7 +1144,8 @@ class LauncherApp(QMainWindow):
             return
 
         self._persist_settings()
-        self._log("Configurazione caricata e SolidWorks avviato.")
+        self._log(f"{import_msg} SolidWorks avviato.")
+        self._show_timed_info("Launcher", "Configurazione applicata e SolidWorks avviato.")
 
     def _launch_saved_setup(self, setup_name: str) -> None:
         setup = self._find_setup(setup_name)
