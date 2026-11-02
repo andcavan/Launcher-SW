@@ -20,7 +20,6 @@ $pyinstallerArgs = @(
     "--clean"
     "--windowed"
     "--name", "LauncherSW"
-    "--add-data", "style;style"
     "--add-data", "VERSION;."
 )
 

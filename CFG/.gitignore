@@ -3,3 +3,6 @@ settings.json
 
 # Ma mantieni la cartella stessa nel repository
 !.gitkeep
+
+# Backup di settings.json illeggibili
+settings.corrupt_*.json

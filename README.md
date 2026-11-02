@@ -5,7 +5,6 @@ App desktop Python per:
 - avviare `SLDWORKS.exe` subito dopo il caricamento
 - salvare setup rapidi con: nome setup, file `.sldreg`, versione SW, percorso `SLDWORKS.exe`
 - avvio rapido da pagina con pulsanti dedicati ai setup salvati
-- riordino pulsanti setup con drag&drop in `Avvio Rapido`
 - pulsanti setup compatti per mostrare piu setup a schermo
 - scelta stile wizard SolidWorks di cosa ripristinare:
   - Opzioni sistema
@@ -16,11 +15,11 @@ App desktop Python per:
   - Viste salvate
 - opzione per pulire le chiavi selezionate prima dell'import (evita residui da configurazioni precedenti)
 
-UI basata su `MyStyle01`.
+UI basata su `PyQt6`.
 
 ## Versione
 
-`0.9.13`
+`0.9.14`
 
 ## Avvio
 
@@ -98,7 +97,6 @@ Durante l'aggiornamento dell'applicazione:
 - Le opzioni selezionate vengono importate filtrando il file `.sldreg` per categorie compatibili con il wizard SolidWorks.
 - Se attivo, il flag "Pulisci chiavi selezionate prima dell'import" elimina prima le chiavi pertinenti e poi applica il nuovo `.sldreg`.
 - Compatibilita migliorata lettura `.sldreg` `REGEDIT4` (ANSI/UTF-8) e `Version 5.00` (UTF-16 BOM).
-- Riordino setup con drag&drop stabilizzato (tracciamento target via posizione cursore).
 - Le chiavi `Recent*` e `Pinned File List` vengono preservate durante l'import per non bloccare l'aggiornamento dei documenti recenti.
 - La pulizia evita delete "padre" che cancellerebbero categorie non selezionate.
 - Il messaggio di conferma a fine import/avvio e temporaneo e si chiude automaticamente dopo 5 secondi.

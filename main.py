@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 from dataclasses import asdict, dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, QTimer
@@ -55,9 +56,9 @@ _SETUP_BOOL_FIELDS = (
 )
 
 try:
-    APP_VERSION = (DATA_DIR / "VERSION").read_text(encoding="utf-8").strip() or "0.9.13"
+    APP_VERSION = (DATA_DIR / "VERSION").read_text(encoding="utf-8").strip() or "0.9.14"
 except Exception:
-    APP_VERSION = "0.9.13"
+    APP_VERSION = "0.9.14"
 
 
 DARK_THEME = """
@@ -681,7 +682,18 @@ def _load_settings() -> LauncherSettings:
 
         return settings
     except Exception:
+        _backup_corrupted_settings()
         return LauncherSettings()
+
+
+def _backup_corrupted_settings() -> None:
+    # Conserva il file illeggibile: il prossimo salvataggio altrimenti lo sovrascriverebbe.
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup = SETTINGS_FILE.with_name(f"settings.corrupt_{stamp}.json")
+    try:
+        shutil.copy2(SETTINGS_FILE, backup)
+    except Exception:
+        pass
 
 
 def _save_settings(settings: LauncherSettings) -> None:
@@ -1166,8 +1178,6 @@ class LauncherApp(QMainWindow):
         self.settings.sldreg_path = self.edt_sldreg.text().strip()
         self.settings.sw_version = self.edt_sw_version.text().strip()
         self.settings.solidworks_path = self.edt_sw_exe.text().strip()
-        selected = self.cmb_setup.currentText().strip()
-        self.settings.active_setup = "" if selected == "Nessuno" else selected
         _save_settings(self.settings)
 
 
