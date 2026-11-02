@@ -32,6 +32,17 @@ python main.py
 
 ## Generare distribuzione `.exe`
 
+### Build automatica (GitHub Actions)
+
+Ad ogni push che modifica `main.py`, `VERSION`, `requirements.txt`, `build.ps1` o `CFG/`
+il workflow `.github/workflows/build-windows.yml` genera la build su Windows.
+Si puo avviare anche a mano da GitHub: `Actions` -> `Build Windows` -> `Run workflow`.
+
+Lo zip `LauncherSW-<versione>-win64` si scarica dalla pagina della run, sezione `Artifacts`
+(conservato 90 giorni). Contiene la cartella `LauncherSW` pronta da copiare.
+
+### Build locale
+
 1. Apri PowerShell nella cartella del progetto:
 ```powershell
 cd "C:\Users\prog3\Desktop\APP MECCANICA\LAUNCHER-SW"

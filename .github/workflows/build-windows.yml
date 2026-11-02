@@ -1,0 +1,45 @@
+name: Build Windows
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "main.py"
+      - "VERSION"
+      - "requirements.txt"
+      - "build.ps1"
+      - "CFG/**"
+      - ".github/workflows/build-windows.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build (onedir)
+        shell: pwsh
+        run: ./build.ps1
+
+      - name: Leggi versione
+        id: ver
+        shell: pwsh
+        run: echo "version=$((Get-Content VERSION -Raw).Trim())" >> $env:GITHUB_OUTPUT
+
+      - name: Verifica contenuto
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "dist\LauncherSW\LauncherSW.exe")) { throw "LauncherSW.exe mancante" }
+          if (-not (Test-Path "dist\LauncherSW\CFG")) { throw "Cartella CFG mancante" }
+          if (Test-Path "dist\LauncherSW\CFG\settings.json") { throw "settings.json non deve essere nella distro" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LauncherSW-${{ steps.ver.outputs.version }}-win64
+          path: dist/LauncherSW/
+          retention-days: 90
