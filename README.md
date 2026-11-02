@@ -21,7 +21,7 @@ UI basata su `PyQt6`.
 
 ## Versione
 
-`0.9.16`
+`0.9.17`
 
 ## Avvio
 
@@ -106,6 +106,7 @@ Durante l'aggiornamento dell'applicazione:
 - Il comando `reg import` puo richiedere privilegi adeguati in base alle chiavi presenti nel file `.sldreg`.
 - I setup sono salvati in `CFG/settings.json` (la cartella CFG non va mai eliminata durante aggiornamenti).
 - UI organizzata in 2 tab: `Avvio Rapido` e `Gestione Setup`.
+- Ogni tab ha la sua dimensione finestra (default 400x540 e 620x700): cambiando tab la finestra si adatta; le dimensioni scelte vengono ricordate in `CFG/settings.json`.
 - Il log e visibile solo nella tab `Gestione Setup` (non in `Avvio Rapido`).
 - Le opzioni selezionate vengono importate filtrando il file `.sldreg` per categorie compatibili con il wizard SolidWorks.
 - Se attivo, il flag "Pulisci chiavi selezionate prima dell'import" elimina prima le chiavi pertinenti e poi applica il nuovo `.sldreg`.

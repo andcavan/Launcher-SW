@@ -58,9 +58,9 @@ _SETUP_BOOL_FIELDS = (
 )
 
 try:
-    APP_VERSION = (DATA_DIR / "VERSION").read_text(encoding="utf-8").strip() or "0.9.16"
+    APP_VERSION = (DATA_DIR / "VERSION").read_text(encoding="utf-8").strip() or "0.9.17"
 except Exception:
-    APP_VERSION = "0.9.16"
+    APP_VERSION = "0.9.17"
 
 
 DARK_THEME = """
@@ -147,6 +147,21 @@ class SetupProfile:
     button_color: str = ""
 
 
+DEFAULT_LAUNCH_SIZE = (400, 540)
+DEFAULT_MANAGE_SIZE = (620, 700)
+
+
+def _parse_window_size(value: object, default: tuple[int, int]) -> list[int]:
+    if isinstance(value, list) and len(value) == 2:
+        try:
+            width, height = int(value[0]), int(value[1])
+        except (TypeError, ValueError):
+            return list(default)
+        if 200 <= width <= 10000 and 200 <= height <= 10000:
+            return [width, height]
+    return list(default)
+
+
 @dataclass
 class LauncherSettings:
     sldreg_path: str = ""
@@ -154,6 +169,8 @@ class LauncherSettings:
     solidworks_path: str = ""
     active_setup: str = ""
     setups: list[SetupProfile] = field(default_factory=list)
+    launch_window_size: list[int] = field(default_factory=lambda: list(DEFAULT_LAUNCH_SIZE))
+    manage_window_size: list[int] = field(default_factory=lambda: list(DEFAULT_MANAGE_SIZE))
 
 
 @dataclass
@@ -705,6 +722,8 @@ def _load_settings() -> LauncherSettings:
             sw_version=str(raw.get("sw_version", "")).strip(),
             solidworks_path=str(raw.get("solidworks_path", "")).strip(),
             active_setup=str(raw.get("active_setup", "")).strip(),
+            launch_window_size=_parse_window_size(raw.get("launch_window_size"), DEFAULT_LAUNCH_SIZE),
+            manage_window_size=_parse_window_size(raw.get("manage_window_size"), DEFAULT_MANAGE_SIZE),
             setups=_parse_setups(raw_setups),
         )
 
@@ -772,7 +791,7 @@ class LauncherApp(QMainWindow):
         self._timed_info_box: QMessageBox | None = None
         self.setWindowTitle(f"Launcher SolidWorks v{APP_VERSION}")
         self.setMinimumSize(400, 500)
-        self.resize(400, 540)
+        self.resize(*self.settings.launch_window_size)
         self.setStyleSheet(DARK_THEME)
 
         self._build_ui()
@@ -801,6 +820,8 @@ class LauncherApp(QMainWindow):
 
         self._build_launch_tab()
         self._build_manage_tab()
+        self._current_tab = self.tabs.currentWidget()
+        self.tabs.currentChanged.connect(self._on_tab_changed)
 
     def _build_launch_tab(self) -> None:
         layout = QVBoxLayout(self.tab_launch)
@@ -1292,6 +1313,31 @@ class LauncherApp(QMainWindow):
         self._persist_settings()
         self._render_quick_buttons()
         self._run_launcher()
+
+    def _window_size_slot(self, tab: QWidget | None) -> list[int]:
+        if tab is self.tab_manage:
+            return self.settings.manage_window_size
+        return self.settings.launch_window_size
+
+    def _remember_window_size(self) -> None:
+        # Da massimizzata/schermo intero la dimensione non va memorizzata.
+        if self.isMaximized() or self.isFullScreen():
+            return
+        self._window_size_slot(self._current_tab)[:] = [self.width(), self.height()]
+
+    def _on_tab_changed(self, _index: int) -> None:
+        self._remember_window_size()
+        self._current_tab = self.tabs.currentWidget()
+        if not (self.isMaximized() or self.isFullScreen()):
+            self.resize(*self._window_size_slot(self._current_tab))
+
+    def closeEvent(self, event) -> None:  # noqa: N802 (nome Qt)
+        self._remember_window_size()
+        try:
+            _save_settings(self.settings)
+        except Exception:
+            pass
+        super().closeEvent(event)
 
     def _log(self, text: str) -> None:
         self.log_box.append(text)
