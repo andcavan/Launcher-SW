@@ -5,8 +5,9 @@ App desktop Python per:
 - avviare `SLDWORKS.exe` subito dopo il caricamento
 - salvare setup rapidi con: nome setup, file `.sldreg`, versione SW, percorso `SLDWORKS.exe`
 - avvio rapido da pagina con pulsanti dedicati ai setup salvati
-- pulsanti setup compatti per mostrare piu setup a schermo
-- colore personalizzabile per ogni pulsante di avvio (`Gestione Setup` -> `Colore pulsante avvio`)
+- pulsanti setup con nome e versione SolidWorks su due righe
+- riordino setup con le frecce `▲` / `▼` accanto a `Setup salvato` in `Gestione Setup`
+- colore personalizzabile per ogni pulsante di avvio (`Gestione Setup` -> `Colore pulsante avvio`, con 8 colori rapidi)
 - scelta stile wizard SolidWorks di cosa ripristinare:
   - Opzioni sistema
   - Layout toolbar (`Tutte` oppure `Solo macro`)
@@ -20,7 +21,7 @@ UI basata su `PyQt6`.
 
 ## Versione
 
-`0.9.15`
+`0.9.16`
 
 ## Avvio
 

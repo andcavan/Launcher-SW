@@ -58,9 +58,9 @@ _SETUP_BOOL_FIELDS = (
 )
 
 try:
-    APP_VERSION = (DATA_DIR / "VERSION").read_text(encoding="utf-8").strip() or "0.9.15"
+    APP_VERSION = (DATA_DIR / "VERSION").read_text(encoding="utf-8").strip() or "0.9.16"
 except Exception:
-    APP_VERSION = "0.9.15"
+    APP_VERSION = "0.9.16"
 
 
 DARK_THEME = """
@@ -601,6 +601,18 @@ def _kill_solidworks_processes() -> tuple[bool, str]:
 _HEX_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 
 
+QUICK_COLORS = (
+    ("Verde", "#16a34a"),
+    ("Blu", "#2563eb"),
+    ("Azzurro", "#0891b2"),
+    ("Viola", "#7c3aed"),
+    ("Rosa", "#db2777"),
+    ("Rosso", "#dc2626"),
+    ("Arancio", "#ea580c"),
+    ("Giallo", "#facc15"),
+)
+
+
 def _normalize_button_color(value: object) -> str:
     color = str(value or "").strip()
     return color.lower() if _HEX_COLOR_RE.match(color) else ""
@@ -853,7 +865,20 @@ class LauncherApp(QMainWindow):
         self._set_button_color("")
 
         grid.addWidget(QLabel("Setup salvato"), 0, 0)
-        grid.addWidget(self.cmb_setup, 0, 1, 1, 3)
+        grid.addWidget(self.cmb_setup, 0, 1, 1, 2)
+        btn_up = QPushButton("\u25b2")
+        btn_up.setToolTip("Sposta il setup selezionato in alto in Avvio Rapido")
+        btn_up.clicked.connect(lambda: self._move_setup(-1))
+        btn_down = QPushButton("\u25bc")
+        btn_down.setToolTip("Sposta il setup selezionato in basso in Avvio Rapido")
+        btn_down.clicked.connect(lambda: self._move_setup(1))
+        move_row = QHBoxLayout()
+        move_row.setSpacing(4)
+        for arrow_btn in (btn_up, btn_down):
+            arrow_btn.setStyleSheet("QPushButton { min-width: 0; padding: 6px 0; }")
+            arrow_btn.setFixedWidth(36)
+            move_row.addWidget(arrow_btn)
+        grid.addLayout(move_row, 0, 3)
 
         btn_new = QPushButton("Nuovo")
         btn_new.clicked.connect(self._new_setup)
@@ -902,15 +927,37 @@ class LauncherApp(QMainWindow):
         grid.addWidget(self.btn_color, 9, 1, 1, 3)
         grid.addWidget(btn_color_reset, 9, 4, 1, 2)
 
-        grid.addWidget(self.chk_cleanup, 10, 0, 1, 6)
+        palette_row = QHBoxLayout()
+        palette_row.setSpacing(4)
+        for color_name, color_hex in QUICK_COLORS:
+            swatch = QPushButton()
+            swatch.setToolTip(color_name)
+            swatch.setFixedSize(26, 26)
+            swatch.setStyleSheet(
+                f"QPushButton {{ background-color: {color_hex}; min-width: 0; padding: 0; border: 1px solid #45475a; }}"
+                "QPushButton:hover { border: 2px solid #f5f5f5; }"
+            )
+            swatch.clicked.connect(lambda _=False, c=color_hex: self._set_button_color(c))
+            palette_row.addWidget(swatch)
+        palette_row.addStretch(1)
+        grid.addLayout(palette_row, 10, 1, 1, 5)
+
+        grid.addWidget(self.chk_cleanup, 11, 0, 1, 6)
 
         btn_run = QPushButton("Carica Configurazione + Avvia SolidWorks")
         btn_run.clicked.connect(self._run_launcher)
-        grid.addWidget(btn_run, 11, 0, 1, 6)
+        grid.addWidget(btn_run, 12, 0, 1, 6)
 
-        layout.addWidget(box)
+        # Scorrevole: con finestra piccola i controlli non si sovrappongono.
+        box_scroll = QScrollArea()
+        box_scroll.setWidgetResizable(True)
+        box_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        box.setMinimumWidth(1)
+        box_scroll.setWidget(box)
+        layout.addWidget(box_scroll, 1)
 
         self.log_box = QTextEdit()
+        self.log_box.setMaximumHeight(120)
         self.log_box.setReadOnly(True)
         layout.addWidget(self.log_box)
 
@@ -947,7 +994,10 @@ class LauncherApp(QMainWindow):
 
         active_key = self.settings.active_setup.strip().casefold()
         for setup in self.settings.setups:
-            btn = QPushButton(f"{setup.name}  |  SW {setup.sw_version or '-'}")
+            label = setup.name
+            if setup.sw_version:
+                label = f"{setup.name}\nSolidWorks {setup.sw_version}"
+            btn = QPushButton(label)
             if setup.name.casefold() == active_key:
                 btn.setObjectName("cfgLaunchButtonLast")
             else:
@@ -1057,6 +1107,22 @@ class LauncherApp(QMainWindow):
         self._populate_from_settings()
         self._render_quick_buttons()
         self._log(f"Setup '{name}' salvato.")
+
+    def _move_setup(self, step: int) -> None:
+        selected = self.cmb_setup.currentText().strip()
+        setup = self._find_setup(selected) if selected != "Nessuno" else None
+        if setup is None:
+            QMessageBox.warning(self, "Setup", "Seleziona un setup da spostare.")
+            return
+        setups = self.settings.setups
+        idx = setups.index(setup)
+        new_idx = idx + step
+        if not 0 <= new_idx < len(setups):
+            return
+        setups[idx], setups[new_idx] = setups[new_idx], setups[idx]
+        self._persist_settings()
+        self._populate_from_settings()
+        self._render_quick_buttons()
 
     def _delete_setup(self) -> None:
         selected = self.cmb_setup.currentText().strip()
