@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import json
+import re
 import os
 import tempfile
 import shutil
@@ -11,11 +12,12 @@ from datetime import datetime
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QColor, QFont
 from PyQt6.QtWidgets import (
     QApplication,
     QButtonGroup,
     QCheckBox,
+    QColorDialog,
     QComboBox,
     QFileDialog,
     QGridLayout,
@@ -56,9 +58,9 @@ _SETUP_BOOL_FIELDS = (
 )
 
 try:
-    APP_VERSION = (DATA_DIR / "VERSION").read_text(encoding="utf-8").strip() or "0.9.14"
+    APP_VERSION = (DATA_DIR / "VERSION").read_text(encoding="utf-8").strip() or "0.9.15"
 except Exception:
-    APP_VERSION = "0.9.14"
+    APP_VERSION = "0.9.15"
 
 
 DARK_THEME = """
@@ -142,6 +144,7 @@ class SetupProfile:
     restore_mouse_gestures: bool = True
     restore_menu_customizations: bool = True
     restore_saved_views: bool = True
+    button_color: str = ""
 
 
 @dataclass
@@ -595,6 +598,27 @@ def _kill_solidworks_processes() -> tuple[bool, str]:
     return False, msg
 
 
+_HEX_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def _normalize_button_color(value: object) -> str:
+    color = str(value or "").strip()
+    return color.lower() if _HEX_COLOR_RE.match(color) else ""
+
+
+def _launch_button_style(color: str, is_active: bool) -> str:
+    base = QColor(color)
+    # Testo chiaro o scuro in base alla luminosita dello sfondo.
+    luminance = 0.299 * base.red() + 0.587 * base.green() + 0.114 * base.blue()
+    text = "#11111b" if luminance > 150 else "#f5f5f5"
+    border = "3px solid #f5f5f5" if is_active else f"1px solid {base.darker(130).name()}"
+    return (
+        f"QPushButton {{ background-color: {base.name()}; color: {text}; border: {border}; }}"
+        f"QPushButton:hover {{ background-color: {base.darker(115).name()}; }}"
+        f"QPushButton:pressed {{ background-color: {base.darker(135).name()}; }}"
+    )
+
+
 def _parse_setups(raw_list: object) -> list[SetupProfile]:
     if not isinstance(raw_list, list):
         return []
@@ -651,6 +675,7 @@ def _parse_setups(raw_list: object) -> list[SetupProfile]:
                 restore_mouse_gestures=restore_options.mouse_gestures,
                 restore_menu_customizations=restore_options.menu_customizations,
                 restore_saved_views=restore_options.saved_views,
+                button_color=_normalize_button_color(row.get("button_color", "")),
             )
         )
     return parsed
@@ -820,6 +845,13 @@ class LauncherApp(QMainWindow):
         self.chk_cleanup = QCheckBox("Pulisci chiavi selezionate prima dell'import")
         self.chk_cleanup.setChecked(True)
 
+        self._button_color = ""
+        self.btn_color = QPushButton()
+        self.btn_color.clicked.connect(self._pick_button_color)
+        btn_color_reset = QPushButton("Predefinito")
+        btn_color_reset.clicked.connect(lambda: self._set_button_color(""))
+        self._set_button_color("")
+
         grid.addWidget(QLabel("Setup salvato"), 0, 0)
         grid.addWidget(self.cmb_setup, 0, 1, 1, 3)
 
@@ -866,11 +898,15 @@ class LauncherApp(QMainWindow):
         grid.addWidget(self.chk_restore_menu_customizations, 8, 0, 1, 3)
         grid.addWidget(self.chk_restore_saved_views, 8, 3, 1, 3)
 
-        grid.addWidget(self.chk_cleanup, 9, 0, 1, 6)
+        grid.addWidget(QLabel("Colore pulsante avvio"), 9, 0)
+        grid.addWidget(self.btn_color, 9, 1, 1, 3)
+        grid.addWidget(btn_color_reset, 9, 4, 1, 2)
+
+        grid.addWidget(self.chk_cleanup, 10, 0, 1, 6)
 
         btn_run = QPushButton("Carica Configurazione + Avvia SolidWorks")
         btn_run.clicked.connect(self._run_launcher)
-        grid.addWidget(btn_run, 10, 0, 1, 6)
+        grid.addWidget(btn_run, 11, 0, 1, 6)
 
         layout.addWidget(box)
 
@@ -916,6 +952,8 @@ class LauncherApp(QMainWindow):
                 btn.setObjectName("cfgLaunchButtonLast")
             else:
                 btn.setObjectName("cfgLaunchButton")
+            if setup.button_color:
+                btn.setStyleSheet(_launch_button_style(setup.button_color, setup.name.casefold() == active_key))
             btn.clicked.connect(lambda _=False, name=setup.name: self._launch_saved_setup(name))
             self.quick_layout.addWidget(btn)
 
@@ -945,6 +983,7 @@ class LauncherApp(QMainWindow):
         else:
             self.rb_toolbar_all.setChecked(True)
         self._on_toolbar_layout_toggled(self.chk_restore_toolbar_layout.isChecked())
+        self._set_button_color(setup.button_color)
 
     def _on_toolbar_layout_toggled(self, enabled: bool) -> None:
         self.rb_toolbar_all.setEnabled(enabled)
@@ -972,6 +1011,22 @@ class LauncherApp(QMainWindow):
         self.chk_restore_menu_customizations.setChecked(True)
         self.chk_restore_saved_views.setChecked(True)
         self.chk_cleanup.setChecked(True)
+        self._set_button_color("")
+
+    def _pick_button_color(self) -> None:
+        initial = QColor(self._button_color) if self._button_color else QColor("#16a34a")
+        color = QColorDialog.getColor(initial, self, "Colore pulsante avvio")
+        if color.isValid():
+            self._set_button_color(color.name())
+
+    def _set_button_color(self, color: str) -> None:
+        self._button_color = _normalize_button_color(color)
+        if self._button_color:
+            self.btn_color.setText(self._button_color)
+            self.btn_color.setStyleSheet(_launch_button_style(self._button_color, False))
+        else:
+            self.btn_color.setText("Predefinito (scegli...)")
+            self.btn_color.setStyleSheet("")
 
     def _save_setup(self) -> None:
         name = self.edt_name.text().strip()
@@ -995,6 +1050,7 @@ class LauncherApp(QMainWindow):
         current.restore_mouse_gestures = bool(self.chk_restore_mouse_gestures.isChecked())
         current.restore_menu_customizations = bool(self.chk_restore_menu_customizations.isChecked())
         current.restore_saved_views = bool(self.chk_restore_saved_views.isChecked())
+        current.button_color = self._button_color
 
         self.settings.active_setup = name
         self._persist_settings()
